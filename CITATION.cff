@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: motion-bricks.cpp (vendored subset)
+message: >-
+  If you use this code, cite motion-bricks.cpp and NVIDIA MotionBricks.
+abstract: >-
+  MotionBricks-G1 on ggml, for dress-on's motion.elf (RFD 2277 A2): the C
+  API (capi.cpp), the agent (agent.cpp), the transition planner (planner.cpp),
+  the root, pose and VQ-decoder graphs (root.cpp, pose.cpp, decoder.cpp), the
+  motion representation (motion_rep.cpp), model and style loading (model.cpp,
+  style.cpp) and error.cpp, from src/ and include/. Local adaptations, each
+  marked "interactor-dress-on": model.cpp and style.cpp include guest_io.hpp
+  (new here), which under MOTIONBRICKS_GUEST_IO routes their four filesystem
+  calls (is_regular_file, is_directory, absolute, gguf_init_from_file) to the
+  embedder, and otherwise names exactly upstream's calls; the four call sites
+  are spelled MB_FS:: and MB_GGUF_OPEN. neural_runtime.cpp (fopen, ggml-cpu or
+  ggml-vulkan) is left out: guest/motion/mb_runtime.cpp implements
+  neural_runtime.hpp over the pump's READ and UPLOAD and ggml-rd. cli.cpp and
+  the Go bindings are left out. src/ is identical at 2368edd (the local
+  checkout's HEAD, not pushed) and e61da1f (pushed, pinned here). The weights
+  and styles are chibifire/MotionBricks-G1-GGML (tools/models/manifest.tsv).
+authors:
+  - name: V-Sekai-fire
+  - name: NVIDIA (MotionBricks, the model and its Python reference)
+repository-code: https://github.com/V-Sekai-fire/motion-bricks-ggml
+commit: e61da1f2a1f5590eb8d1e6eaf6ce5025d33126dd
+license: Apache-2.0
