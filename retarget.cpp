@@ -12,7 +12,7 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kProbe = 30.f * kPi / 180.f; // the rotation each axis is tried with
 
 const char *kRoleNames[ROLE_COUNT] = { "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
-	"LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg" };
+	"LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "Hips", "Spine", "LeftFoot", "RightFoot" };
 
 float dot3(const float *a, const float *b) {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -71,6 +71,14 @@ void orthonormalize_columns(float *m) {
 
 const char *role_name(int role) {
 	return role >= 0 && role < ROLE_COUNT ? kRoleNames[role] : "?";
+}
+
+uint32_t rung_mask(int rung) {
+	uint32_t m = (1u << kLimbRoles) - 1u;
+	if (rung >= 1) m |= 1u << HIPS;
+	if (rung >= 2) m |= 1u << SPINE;
+	if (rung >= 3) m |= (1u << L_FOOT) | (1u << R_FOOT);
+	return m;
 }
 
 bool role_is_hinge(int role) {
@@ -164,6 +172,8 @@ Rig measure(const Skeleton &in, const int joints[ROLE_COUNT], const int ends[ROL
 		const float rel[3] = { e[0] - p[0], e[1] - p[1], e[2] - p[2] };
 		// The limb bends forward, except the knee, which bends back.
 		const float bend = (r == L_LOWER_LEG || r == R_LOWER_LEG) ? -1.f : 1.f;
+		// An ankle's toe already points forward: its flexion is the axis that lifts the toe most.
+		const bool lift = r == L_FOOT || r == R_FOOT;
 		int best = -1;
 		float best_fwd = 0.f;
 		for (int k = 0; k < 3; ++k) {
@@ -175,16 +185,17 @@ Rig measure(const Skeleton &in, const int joints[ROLE_COUNT], const int ends[ROL
 			a.travel_mm[k] = 1000.f * std::sqrt(dot3(dsp, dsp));
 			a.forward_mm[k] = 1000.f * dot3(dsp, rig.forward);
 			a.up_mm[k] = 1000.f * dsp[1];
-			if (best < 0 || std::fabs(a.forward_mm[k]) > std::fabs(best_fwd)) {
+			const float m = lift ? a.up_mm[k] : a.forward_mm[k];
+			if (best < 0 || std::fabs(m) > std::fabs(best_fwd)) {
 				best = k;
-				best_fwd = a.forward_mm[k];
+				best_fwd = m;
 			}
 		}
 		// A segment that already points forward (G1's forearm at rest) moves its
 		// end forward little about any axis; its flexion lifts the end instead.
 		// When the runner-up is within 20% of the best, the one that also lifts
 		// the end more is the flexion axis.
-		for (int k = 0; k < 3; ++k) {
+		for (int k = 0; k < 3 && !lift; ++k) {
 			if (k != best && std::fabs(a.forward_mm[k]) >= 0.8f * std::fabs(best_fwd)) {
 				a.tie = true;
 				if (std::fabs(a.up_mm[k]) > std::fabs(a.up_mm[best])) {
@@ -214,8 +225,9 @@ Retargeted retarget(const Rig &src, const float *source_local, int frames, int s
 }
 
 void retarget_range(const Rig &src, const float *source_local, int f0, int f1, int source_joints, const Rig &dst,
-		Retargeted &out) {
+		Retargeted &out, uint32_t roles) {
 	for (int r = 0; r < ROLE_COUNT; ++r) {
+		const bool on = (roles >> r) & 1u;
 		const Axis &sa = src.axis[r];
 		const Axis &da = dst.axis[r];
 		float s_axis[3] = { 0, 0, 0 };
@@ -257,7 +269,7 @@ void retarget_range(const Rig &src, const float *source_local, int f0, int f1, i
 		}
 		for (int f = f0; f < f1; ++f) {
 			const float *L = source_local + (size_t(f) * source_joints + size_t(sa.joint)) * 9;
-			const float src_angle = angle_about(L, s_axis);
+			const float src_angle = on ? angle_about(L, s_axis) : 0.f;
 			const float angle = role_is_hinge(r) ? std::fabs(src_angle) : src_angle;
 			float flex[9], m[9];
 			axis_angle_matrix(d_axis, angle, flex);

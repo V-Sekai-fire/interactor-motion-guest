@@ -481,14 +481,15 @@ std::string g_avatar_bones[motion::ROLE_COUNT];
 // The source skeletons' own joints for each role and chain end (these tables
 // are the models' joint names, the counterpart of motion_poses.py's FLEXION).
 const char *kSomaJoints[motion::ROLE_COUNT] = { "LeftArm", "RightArm", "LeftForeArm", "RightForeArm", "LeftLeg",
-	"RightLeg", "LeftShin", "RightShin" };
+	"RightLeg", "LeftShin", "RightShin", "Hips", "Spine1", "LeftFoot", "RightFoot" };
 const char *kSomaEnds[motion::ROLE_COUNT] = { "LeftHand", "RightHand", "LeftHand", "RightHand", "LeftFoot", "RightFoot",
-	"LeftFoot", "RightFoot" };
+	"LeftFoot", "RightFoot", "Head", "Head", "LeftToeBase", "RightToeBase" };
 const char *kG1Joints[motion::ROLE_COUNT] = { "left_shoulder_pitch_skel", "right_shoulder_pitch_skel", "left_elbow_skel",
-	"right_elbow_skel", "left_hip_pitch_skel", "right_hip_pitch_skel", "left_knee_skel", "right_knee_skel" };
+	"right_elbow_skel", "left_hip_pitch_skel", "right_hip_pitch_skel", "left_knee_skel", "right_knee_skel", "pelvis_skel", "waist_pitch_skel", "left_ankle_pitch_skel",
+	"right_ankle_pitch_skel" };
 const char *kG1Ends[motion::ROLE_COUNT] = { "left_hand_roll_skel", "right_hand_roll_skel", "left_hand_roll_skel",
 	"right_hand_roll_skel", "left_ankle_roll_skel", "right_ankle_roll_skel", "left_ankle_roll_skel",
-	"right_ankle_roll_skel" };
+	"right_ankle_roll_skel", "left_shoulder_pitch_skel", "left_shoulder_pitch_skel", "left_toe_base", "right_toe_base" };
 
 // A source rig from a finished clip's skeleton: identity rest frames (both
 // models' rotations are relative to rest frames aligned with the world), rest
@@ -534,7 +535,8 @@ bool run_retarget(Clip &c, std::string &err) {
 	motion::retarget_begin(rt, c.frames);
 	for (int f = 0; f < c.frames; f += 8) {
 		const int f1 = std::min(c.frames, f + 8);
-		motion::retarget_range(g_src[c.model], &g_pool[c.local_off], f, f1, c.joints, g_avatar, rt);
+		motion::retarget_range(g_src[c.model], &g_pool[c.local_off], f, f1, c.joints, g_avatar, rt,
+				motion::rung_mask(env_int("MOTION_RUNG", 2)));
 		g_prog.i = f1;
 		gas();
 	}
@@ -586,7 +588,7 @@ Variant text(const std::string &s) {
 }
 
 void apply_env(const std::string &env) {
-	for (const char *k : { "GGML_RD_FAULT", "GGML_RD_BARRIER_ALL", "GGML_RD_TIMESTAMPS", "KIMODO_STEPS", "MOTION_GAS" }) {
+	for (const char *k : { "GGML_RD_FAULT", "GGML_RD_BARRIER_ALL", "GGML_RD_TIMESTAMPS", "KIMODO_STEPS", "MOTION_GAS", "MOTION_RUNG" }) {
 		unsetenv(k);
 	}
 	for (const std::string &kv : split(env, ' ')) {
@@ -803,7 +805,7 @@ static Variant motion_avatar(String names, PackedArray<int32_t> parents, PackedA
 	};
 	int joints[motion::ROLE_COUNT], ends[motion::ROLE_COUNT];
 	const char *end_role[motion::ROLE_COUNT] = { "LeftHand", "RightHand", "LeftHand", "RightHand", "LeftFoot",
-		"RightFoot", "LeftFoot", "RightFoot" };
+		"RightFoot", "LeftFoot", "RightFoot", "Head", "Head", "LeftToes", "RightToes" };
 	for (int r = 0; r < motion::ROLE_COUNT; ++r) {
 		joints[r] = role_bone(motion::role_name(r));
 		ends[r] = role_bone(end_role[r]);
@@ -893,7 +895,7 @@ static Variant motion_stats() {
 
 int main() {
 	ADD_API_FUNCTION(motion_open, "String", "Object rd, int total_mb, String models_dir", "Attach the host's RenderingDevice; models_dir holds Kimodo-SOMA-RP-v1.1-gguf/ and MotionBricks-G1-GGML/");
-	ADD_API_FUNCTION(motion_env, "String", "String env", "K=V switches for later jobs: GGML_RD_FAULT, GGML_RD_BARRIER_ALL, GGML_RD_TIMESTAMPS, KIMODO_STEPS, MOTION_GAS");
+	ADD_API_FUNCTION(motion_env, "String", "String env", "K=V switches for later jobs: GGML_RD_FAULT, GGML_RD_BARRIER_ALL, GGML_RD_TIMESTAMPS, KIMODO_STEPS, MOTION_GAS, MOTION_RUNG");
 	ADD_API_FUNCTION(motion_prompt_embedding, "String", "String prompt, PackedFloat32Array embedding", "Stand-in: a prompt's native LLM2Vec embedding (4096 floats)");
 	ADD_API_FUNCTION(motion_generate, "String", "String model, String prompt, float seconds, int seed", "Queue a clip: kimodo_soma | motionbricks_g1 -> QUEUED <id>");
 	ADD_API_FUNCTION(motion_pump, "Array", "PackedByteArray data", "Resume the job queue once: [header, text, rid]");

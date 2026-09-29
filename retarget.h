@@ -1,6 +1,6 @@
 // The pose-envelope retarget of character-fox 13f3c4bf, as matrices (rule 11).
 //
-// Only the FLEXION angle of eight limb joints crosses from a source skeleton
+// Only the FLEXION angle of eight limb joints (and, by rung, the pelvis, spine and ankles) crosses from a source skeleton
 // (Kimodo's SOMA-30 or MotionBricks' G1-34) to the avatar, and it is applied
 // about the avatar's own flexion axis. G1 splits a shoulder into three single
 // axis joints where the avatar has one bone per segment; composing them is a
@@ -37,8 +37,17 @@ enum Role : int {
 	R_UPPER_LEG,
 	L_LOWER_LEG,
 	R_LOWER_LEG,
+	// The ladder (MOTION_RUNG): 1 adds the pelvis, 2 the spine (the default), 3 the ankles; a role
+	// above the rung stays at rest.
+	HIPS,
+	SPINE,
+	L_FOOT,
+	R_FOOT,
 	ROLE_COUNT
 };
+constexpr int kLimbRoles = 8;
+// The roles a rung drives, as a bit mask.
+uint32_t rung_mask(int rung);
 const char *role_name(int role);
 bool role_is_hinge(int role);
 
@@ -112,7 +121,7 @@ Retargeted retarget(const Rig &source, const float *source_local, int frames, in
 // retarget_range fills frames [f0, f1). Any slicing gives the same bytes.
 void retarget_begin(Retargeted &out, int frames);
 void retarget_range(const Rig &source, const float *source_local, int f0, int f1, int source_joints, const Rig &avatar,
-		Retargeted &out);
+		Retargeted &out, uint32_t roles = ~0u);
 
 // The clip-range report's lines for one clip: per role, the target range and
 // the source range in degrees.
