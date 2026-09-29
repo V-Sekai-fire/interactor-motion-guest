@@ -37,12 +37,14 @@ enum Role : int {
 	R_UPPER_LEG,
 	L_LOWER_LEG,
 	R_LOWER_LEG,
-	// The ladder (MOTION_RUNG): 1 adds the pelvis, 2 the spine (the default), 3 the ankles; a role
-	// above the rung stays at rest.
+	// The ladder (MOTION_RUNG): 1 adds the pelvis, 2 the spine, 3 the chest and neck (the default),
+	// 4 the ankles; a role above the rung, or one a source skeleton lacks, stays at rest.
 	HIPS,
 	SPINE,
 	L_FOOT,
 	R_FOOT,
+	CHEST,
+	NECK,
 	ROLE_COUNT
 };
 constexpr int kLimbRoles = 8;

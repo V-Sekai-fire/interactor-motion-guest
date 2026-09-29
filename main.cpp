@@ -481,15 +481,15 @@ std::string g_avatar_bones[motion::ROLE_COUNT];
 // The source skeletons' own joints for each role and chain end (these tables
 // are the models' joint names, the counterpart of motion_poses.py's FLEXION).
 const char *kSomaJoints[motion::ROLE_COUNT] = { "LeftArm", "RightArm", "LeftForeArm", "RightForeArm", "LeftLeg",
-	"RightLeg", "LeftShin", "RightShin", "Hips", "Spine1", "LeftFoot", "RightFoot" };
+	"RightLeg", "LeftShin", "RightShin", "Hips", "Spine1", "LeftFoot", "RightFoot", "Chest", "Neck1" };
 const char *kSomaEnds[motion::ROLE_COUNT] = { "LeftHand", "RightHand", "LeftHand", "RightHand", "LeftFoot", "RightFoot",
-	"LeftFoot", "RightFoot", "Head", "Head", "LeftToeBase", "RightToeBase" };
+	"LeftFoot", "RightFoot", "Head", "Head", "LeftToeBase", "RightToeBase", "Head", "Head" };
 const char *kG1Joints[motion::ROLE_COUNT] = { "left_shoulder_pitch_skel", "right_shoulder_pitch_skel", "left_elbow_skel",
 	"right_elbow_skel", "left_hip_pitch_skel", "right_hip_pitch_skel", "left_knee_skel", "right_knee_skel", "pelvis_skel", "waist_pitch_skel", "left_ankle_pitch_skel",
-	"right_ankle_pitch_skel" };
+	"right_ankle_pitch_skel", "", "" };
 const char *kG1Ends[motion::ROLE_COUNT] = { "left_hand_roll_skel", "right_hand_roll_skel", "left_hand_roll_skel",
 	"right_hand_roll_skel", "left_ankle_roll_skel", "right_ankle_roll_skel", "left_ankle_roll_skel",
-	"right_ankle_roll_skel", "left_shoulder_pitch_skel", "left_shoulder_pitch_skel", "left_toe_base", "right_toe_base" };
+	"right_ankle_roll_skel", "left_shoulder_pitch_skel", "left_shoulder_pitch_skel", "left_toe_base", "right_toe_base", "", "" };
 
 // A source rig from a finished clip's skeleton: identity rest frames (both
 // models' rotations are relative to rest frames aligned with the world), rest
@@ -536,7 +536,7 @@ bool run_retarget(Clip &c, std::string &err) {
 	for (int f = 0; f < c.frames; f += 8) {
 		const int f1 = std::min(c.frames, f + 8);
 		motion::retarget_range(g_src[c.model], &g_pool[c.local_off], f, f1, c.joints, g_avatar, rt,
-				motion::rung_mask(env_int("MOTION_RUNG", 2)));
+				motion::rung_mask(env_int("MOTION_RUNG", 3)));
 		g_prog.i = f1;
 		gas();
 	}
@@ -805,7 +805,7 @@ static Variant motion_avatar(String names, PackedArray<int32_t> parents, PackedA
 	};
 	int joints[motion::ROLE_COUNT], ends[motion::ROLE_COUNT];
 	const char *end_role[motion::ROLE_COUNT] = { "LeftHand", "RightHand", "LeftHand", "RightHand", "LeftFoot",
-		"RightFoot", "LeftFoot", "RightFoot", "Head", "Head", "LeftToes", "RightToes" };
+		"RightFoot", "LeftFoot", "RightFoot", "Head", "Head", "LeftToes", "RightToes", "Head", "Head" };
 	for (int r = 0; r < motion::ROLE_COUNT; ++r) {
 		joints[r] = role_bone(motion::role_name(r));
 		ends[r] = role_bone(end_role[r]);

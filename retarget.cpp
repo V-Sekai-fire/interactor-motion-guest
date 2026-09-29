@@ -12,7 +12,7 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kProbe = 30.f * kPi / 180.f; // the rotation each axis is tried with
 
 const char *kRoleNames[ROLE_COUNT] = { "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
-	"LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "Hips", "Spine", "LeftFoot", "RightFoot" };
+	"LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "Hips", "Spine", "LeftFoot", "RightFoot", "Chest", "Neck" };
 
 float dot3(const float *a, const float *b) {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -77,7 +77,8 @@ uint32_t rung_mask(int rung) {
 	uint32_t m = (1u << kLimbRoles) - 1u;
 	if (rung >= 1) m |= 1u << HIPS;
 	if (rung >= 2) m |= 1u << SPINE;
-	if (rung >= 3) m |= (1u << L_FOOT) | (1u << R_FOOT);
+	if (rung >= 3) m |= (1u << CHEST) | (1u << NECK);
+	if (rung >= 4) m |= (1u << L_FOOT) | (1u << R_FOOT);
 	return m;
 }
 
@@ -162,6 +163,9 @@ Rig measure(const Skeleton &in, const int joints[ROLE_COUNT], const int ends[ROL
 		Axis &a = rig.axis[r];
 		a.joint = joints[r];
 		a.end = ends[r];
+		if (a.joint < 0 && r >= CHEST) {
+			continue; // a source without this joint: the role stays at rest
+		}
 		if (a.joint < 0 || a.end < 0 || a.joint >= nj || a.end >= nj) {
 			rig.error = std::string("role ") + role_name(r) + " has no joint or no end";
 			return rig;
@@ -227,11 +231,13 @@ Retargeted retarget(const Rig &src, const float *source_local, int frames, int s
 void retarget_range(const Rig &src, const float *source_local, int f0, int f1, int source_joints, const Rig &dst,
 		Retargeted &out, uint32_t roles) {
 	for (int r = 0; r < ROLE_COUNT; ++r) {
-		const bool on = (roles >> r) & 1u;
+		const bool on = ((roles >> r) & 1u) && src.axis[r].local >= 0;
 		const Axis &sa = src.axis[r];
 		const Axis &da = dst.axis[r];
 		float s_axis[3] = { 0, 0, 0 };
-		s_axis[sa.local] = sa.sign;
+		if (sa.local >= 0) {
+			s_axis[sa.local] = sa.sign;
+		}
 		float d_axis[3] = { 0, 0, 0 };
 		d_axis[da.local] = da.sign;
 		// The avatar bone's rest transform relative to its parent.
