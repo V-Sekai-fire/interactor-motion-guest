@@ -1,0 +1,33 @@
+name: Controller routes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  routes:
+    name: routes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Prove every input routed and every motion reachable
+        working-directory: routes
+        run: lake build
+
+      - name: The engine's controller profile, OpenXR extensions only
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse --branch master https://github.com/V-Sekai-fire/entities-godot engine
+          git -C engine sparse-checkout set modules/openxr/extensions
+
+      - name: The route table's inputs equal the profile's, both ways
+        working-directory: routes
+        run: |
+          python3 check_profile.py --self-test
+          lake exe controller_routes paths > /tmp/paths.txt
+          python3 check_profile.py ../engine /tmp/paths.txt
