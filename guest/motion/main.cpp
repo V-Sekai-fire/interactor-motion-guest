@@ -33,6 +33,10 @@
 //                                           the avatar's bones, exported by the host
 //   motion_retarget(id)                     the clip on the avatar + its clip ranges
 //                                           (made by the job, eight frames a slice)
+//   motion_live_start(seed)                 MotionBricks steered live: the job plans a few
+//   motion_live_steer(mx, mz, fx, fz, speed)  frames ahead of the host at a time, toward the
+//   motion_live_frames()                    latest steer, and hands back world joint
+//   motion_live_skeleton(), motion_live_stop() positions
 #include <api.hpp>
 
 #include <algorithm>
@@ -205,7 +209,7 @@ std::vector<int> g_ipool;
 std::vector<std::string> g_names;
 // The job queue: (kind, clip). GENERATE runs the model and then, when the
 // avatar is known, the retarget; RETARGET only the retarget.
-enum Kind : int { GENERATE = 0, RETARGET = 1 };
+enum Kind : int { GENERATE = 0, RETARGET = 1, LIVE = 2 };
 std::deque<std::pair<int, int>> g_queue;
 
 size_t push_floats(const float *p, size_t n) {
@@ -364,6 +368,17 @@ void xyzw_matrix(const float *q, float *m) {
 	m[8] = 1 - 2 * (x * x + y * y);
 }
 
+bool mb_load(std::string &err) {
+	char eb[512] = { 0 };
+	g_prog.phase = "streaming MotionBricks weights";
+	if (g_mb == nullptr) {
+		if (!mb_ok(mb_runtime_options_create(&g_mb_opts, eb, sizeof eb), "options", eb, err)) return false;
+		if (!mb_ok(mb_model_load(mb_bundle().c_str(), g_mb_opts, &g_mb, eb, sizeof eb), "model_load", eb, err)) return false;
+		logf_("motionbricks: %s loaded", mb_bundle().c_str());
+	}
+	return true;
+}
+
 bool run_mbricks(Clip &c, std::string &err) {
 	char eb[512] = { 0 };
 	const std::string style = mb_style_for(g_clip_prompt[size_t(c.id)]);
@@ -373,12 +388,7 @@ bool run_mbricks(Clip &c, std::string &err) {
 				"' (its released styles are walk/idle/dance-like clips, not text)";
 		return false;
 	}
-	g_prog.phase = "streaming MotionBricks weights";
-	if (g_mb == nullptr) {
-		if (!mb_ok(mb_runtime_options_create(&g_mb_opts, eb, sizeof eb), "options", eb, err)) return false;
-		if (!mb_ok(mb_model_load(mb_bundle().c_str(), g_mb_opts, &g_mb, eb, sizeof eb), "model_load", eb, err)) return false;
-		logf_("motionbricks: %s loaded", mb_bundle().c_str());
-	}
+	if (!mb_load(err)) return false;
 	mb_style *st = nullptr;
 	mb_agent *agent = nullptr;
 	mb_command *cmd = nullptr;
@@ -550,11 +560,162 @@ bool run_retarget(Clip &c, std::string &err) {
 	return true;
 }
 
+// --- live: MotionBricks steered each frame ------------------------------------------------
+struct Live {
+	bool want = false;
+	bool running = false;
+	int64_t seed = 0;
+	std::string error;
+	float move[2] = { 0.f, 1.f };
+	float face[2] = { 0.f, 1.f };
+	float speed = 0.f;
+	int64_t plans = 0;
+	int64_t produced = 0;
+	uint32_t joints = 0;
+	std::vector<int32_t> parent;
+	std::vector<float> offset; // joints x 3, from the parent in the neutral pose
+	std::vector<std::string> names;
+	std::deque<std::vector<float>> frames; // world joint positions, joints x 3 each
+};
+Live g_live;
+// Frames planned ahead of the host, and committed per plan: a steer reaches the body within
+// kLiveTake / 30 s of the frames already queued.
+constexpr size_t kLiveAhead = 12;
+constexpr size_t kLiveTake = 6;
+
+// One frame's world joint positions from the root translation and the local rotations (XYZW).
+std::vector<float> live_positions(const float *root, const float *xyzw) {
+	const uint32_t J = g_live.joints;
+	std::vector<float> world(size_t(J) * 9), at(size_t(J) * 3);
+	for (uint32_t j = 0; j < J; ++j) {
+		float local[9];
+		xyzw_matrix(xyzw + size_t(j) * 4, local);
+		const int32_t p = g_live.parent[j];
+		float *r = &world[size_t(j) * 9];
+		float *x = &at[size_t(j) * 3];
+		if (p < 0) {
+			std::copy(local, local + 9, r);
+			std::copy(root, root + 3, x);
+			continue;
+		}
+		const float *rp = &world[size_t(p) * 9];
+		const float *o = &g_live.offset[size_t(j) * 3];
+		for (int a = 0; a < 3; ++a) {
+			for (int b = 0; b < 3; ++b) {
+				r[a * 3 + b] = rp[a * 3] * local[b] + rp[a * 3 + 1] * local[3 + b] + rp[a * 3 + 2] * local[6 + b];
+			}
+			x[a] = at[size_t(p) * 3 + size_t(a)] + rp[a * 3] * o[0] + rp[a * 3 + 1] * o[1] + rp[a * 3 + 2] * o[2];
+		}
+	}
+	return at;
+}
+
+bool run_live(std::string &err) {
+	char eb[512] = { 0 };
+	if (!mb_load(err)) return false;
+	mb_style *idle = nullptr, *walk = nullptr;
+	mb_agent *agent = nullptr;
+	mb_command *cmd = nullptr;
+	auto cleanup = [&] {
+		if (cmd) mb_command_free(cmd);
+		if (agent) mb_agent_free(agent);
+		if (walk) mb_style_free(walk);
+		if (idle) mb_style_free(idle);
+	};
+	if (!mb_ok(mb_style_load(g_mb, mb_style_path("idle").c_str(), &idle, eb, sizeof eb), "style_load idle", eb, err) ||
+			!mb_ok(mb_style_load(g_mb, mb_style_path("walk").c_str(), &walk, eb, sizeof eb), "style_load walk", eb, err) ||
+			!mb_ok(mb_agent_create(g_mb, &agent, eb, sizeof eb), "agent", eb, err) ||
+			!mb_ok(mb_agent_reset(agent, idle, eb, sizeof eb), "reset", eb, err) ||
+			!mb_ok(mb_command_create(&cmd, eb, sizeof eb), "command", eb, err) ||
+			!mb_ok(mb_command_set_seed(cmd, uint64_t(g_live.seed), eb, sizeof eb), "seed", eb, err)) {
+		cleanup();
+		return false;
+	}
+	uint32_t J = 0;
+	mb_model_get_joint_count(g_mb, &J, eb, sizeof eb);
+	g_live.joints = J;
+	g_live.parent.assign(J, -1);
+	g_live.offset.assign(size_t(J) * 3, 0.f);
+	g_live.names.assign(J, "?");
+	for (uint32_t j = 0; j < J; ++j) {
+		const char *nm = nullptr;
+		float x = 0, y = 0, z = 0, px = 0, py = 0, pz = 0;
+		mb_model_get_joint_name(g_mb, j, &nm, eb, sizeof eb);
+		mb_model_get_joint_parent(g_mb, j, &g_live.parent[j], eb, sizeof eb);
+		mb_model_get_neutral_joint_position(g_mb, j, &x, &y, &z, eb, sizeof eb);
+		if (g_live.parent[j] >= int32_t(j)) {
+			err = "MotionBricks joint " + std::to_string(j) + " comes before its parent";
+			cleanup();
+			return false;
+		}
+		if (g_live.parent[j] >= 0) {
+			mb_model_get_neutral_joint_position(g_mb, uint32_t(g_live.parent[j]), &px, &py, &pz, eb, sizeof eb);
+		}
+		g_live.offset[size_t(j) * 3] = x - px;
+		g_live.offset[size_t(j) * 3 + 1] = y - py;
+		g_live.offset[size_t(j) * 3 + 2] = z - pz;
+		g_live.names[j] = nm ? nm : "?";
+	}
+	g_live.running = true;
+	g_prog.phase = "live";
+	while (g_live.want) {
+		if (g_live.frames.size() >= kLiveAhead) {
+			pump::coop();
+			continue;
+		}
+		const bool moving = g_live.speed > 0.05f;
+		mb_motion *m = nullptr;
+		if (!mb_ok(mb_command_set_style(cmd, moving ? walk : idle, eb, sizeof eb), "set_style", eb, err) ||
+				!mb_ok(mb_command_set_target_speed(cmd, moving ? g_live.speed : 0.f, eb, sizeof eb), "speed", eb, err) ||
+				!mb_ok(mb_command_set_movement_direction(cmd, g_live.move[0], 0.f, g_live.move[1], eb, sizeof eb), "dir", eb, err) ||
+				!mb_ok(mb_command_set_facing_direction(cmd, g_live.face[0], 0.f, g_live.face[1], eb, sizeof eb), "face", eb, err) ||
+				!mb_ok(mb_agent_plan(agent, cmd, &m, eb, sizeof eb), "plan", eb, err)) {
+			cleanup();
+			g_live.running = false;
+			return false;
+		}
+		uint64_t jn = 0, tn = 0, rn = 0;
+		const float *tp = nullptr, *rp = nullptr;
+		mb_motion_get_joint_count(m, &jn, eb, sizeof eb);
+		mb_motion_get_root_translations(m, &tp, &tn, eb, sizeof eb);
+		mb_motion_get_local_rotations_xyzw(m, &rp, &rn, eb, sizeof eb);
+		const size_t take = std::min<size_t>(kLiveTake, tn / 3);
+		for (size_t i = 0; i < take && jn == J; ++i) {
+			g_live.frames.push_back(live_positions(tp + i * 3, rp + i * jn * 4));
+		}
+		mb_motion_free(m);
+		++g_live.plans;
+		g_live.produced += int64_t(take);
+		if (take == 0 || jn != J || !mb_ok(mb_agent_advance(agent, uint32_t(take), eb, sizeof eb), "advance", eb, err)) {
+			if (take == 0) err = "planner returned no frames";
+			if (jn != J) err = "planner returned " + std::to_string(jn) + " joints, the model has " + std::to_string(J);
+			cleanup();
+			g_live.running = false;
+			return false;
+		}
+		gas();
+	}
+	cleanup();
+	g_live.running = false;
+	return true;
+}
+
 // --- the queue's runner, on the pump ------------------------------------------------------
 void runner(void *) {
 	while (!g_queue.empty()) {
 		const auto [kind, id] = g_queue.front();
 		g_queue.pop_front();
+		if (kind == LIVE) {
+			g_prog = Progress{};
+			std::string err;
+			if (!run_live(err)) {
+				g_live.error = err;
+				logf_("live: ERROR %s", err.c_str());
+			}
+			g_prog.phase = "idle";
+			pump::coop();
+			continue;
+		}
 		g_clips[size_t(id)].state = 1;
 		g_prog = Progress{};
 		g_prog.job = id;
@@ -683,6 +844,69 @@ static Variant motion_generate(String model, String prompt, double seconds, int6
 		}
 	}
 	return text("QUEUED " + std::to_string(c.id));
+}
+
+static Variant motion_live_start(int64_t seed) {
+	if (g_models.empty()) {
+		return text("FAIL: motion_open first");
+	}
+	if (g_live.want) {
+		return text("RUNNING");
+	}
+	g_live.want = true;
+	g_live.seed = seed;
+	g_live.error.clear();
+	g_live.frames.clear();
+	g_queue.push_back({ LIVE, -1 });
+	if (!pump::running() && !pump::start(&runner, nullptr, size_t(16) << 20)) {
+		g_live.want = false;
+		return text("FAIL: the job fiber did not start");
+	}
+	return text("QUEUED live");
+}
+
+static Variant motion_live_steer(double mx, double mz, double fx, double fz, double speed) {
+	const double ml = std::sqrt(mx * mx + mz * mz), fl = std::sqrt(fx * fx + fz * fz);
+	if (ml > 1e-6) {
+		g_live.move[0] = float(mx / ml);
+		g_live.move[1] = float(mz / ml);
+	}
+	if (fl > 1e-6) {
+		g_live.face[0] = float(fx / fl);
+		g_live.face[1] = float(fz / fl);
+	}
+	g_live.speed = float(std::max(0.0, speed));
+	return text("STEER");
+}
+
+// The frames planned since the last call, oldest first: [joints, frames, then frames x joints x 3].
+static Variant motion_live_frames() {
+	std::vector<float> out = { float(g_live.joints), float(g_live.frames.size()) };
+	for (const std::vector<float> &f : g_live.frames) {
+		out.insert(out.end(), f.begin(), f.end());
+	}
+	g_live.frames.clear();
+	return Variant(PackedArray<float>(out));
+}
+
+static Variant motion_live_skeleton() {
+	std::string s;
+	for (size_t j = 0; j < g_live.names.size(); ++j) {
+		s += g_live.names[j] + " " + std::to_string(g_live.parent[j]) + "\n";
+	}
+	return text(s);
+}
+
+static Variant motion_live_stop() {
+	g_live.want = false;
+	return text("STOPPING");
+}
+
+static Variant motion_live_status() {
+	return text(std::string(g_live.running ? "RUNNING" : g_live.want ? "STARTING" : "STOPPED") +
+			" plans=" + std::to_string(g_live.plans) + " frames=" + std::to_string(g_live.produced) +
+			" buffered=" + std::to_string(g_live.frames.size()) + " permanent=" + std::to_string(g_dev.permanent_slots()) +
+			(g_live.error.empty() ? "" : " error=" + g_live.error));
 }
 
 static Variant motion_pump(PackedArray<uint8_t> in) {
@@ -906,6 +1130,12 @@ int main() {
 	ADD_API_FUNCTION(motion_retarget, "Dictionary", "int id", "The clip on the avatar (flexion of its role bones) and its clip ranges; queues the retarget if it is not made yet");
 	ADD_API_FUNCTION(motion_progress, "Dictionary", "", "The job queue now: job, model, prompt, phase, i of n, gas");
 	ADD_API_FUNCTION(motion_output, "String", "", "What the jobs logged");
+	ADD_API_FUNCTION(motion_live_start, "String", "int seed", "Start MotionBricks live, steered by motion_live_steer");
+	ADD_API_FUNCTION(motion_live_steer, "String", "float move_x, float move_z, float face_x, float face_z, float speed", "Movement and facing directions on the floor, and speed in m/s (0 stands idle)");
+	ADD_API_FUNCTION(motion_live_frames, "PackedFloat32Array", "", "The frames planned since the last call: joints, frames, then world joint positions");
+	ADD_API_FUNCTION(motion_live_skeleton, "String", "", "Each joint's name and parent, one per line");
+	ADD_API_FUNCTION(motion_live_stop, "String", "", "Stop the live agent after its current plan");
+	ADD_API_FUNCTION(motion_live_status, "String", "", "RUNNING | STARTING | STOPPED, with plan and frame counts");
 	ADD_API_FUNCTION(motion_stats, "String", "", "ggml-rd and rd_compute counters");
 	halt();
 }
