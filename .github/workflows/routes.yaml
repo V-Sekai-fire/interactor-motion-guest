@@ -12,6 +12,7 @@ jobs:
   routes:
     name: routes
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +27,7 @@ jobs:
 
       - name: The engine's controller profile, OpenXR extensions only
         run: |
-          git clone -q --depth 1 --filter=blob:none --sparse --branch master https://github.com/V-Sekai-fire/entities-godot engine
+          git clone -q --depth 1 --filter=blob:none --sparse --branch main https://github.com/V-Sekai-fire/entities-godot engine
           git -C engine sparse-checkout set modules/openxr/extensions
 
       - name: The route table's inputs equal the profile's, both ways
