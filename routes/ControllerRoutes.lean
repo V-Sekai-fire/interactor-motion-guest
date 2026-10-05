@@ -45,6 +45,11 @@ inductive Route where
   | use (u : Use)
   deriving DecidableEq, Repr
 
+/-- World grab is a fallback: off until the radial menu turns it on. -/
+inductive GrabMode where
+  | off | fallback
+  deriving DecidableEq, Repr
+
 /-- The scrappy prop built from CSG solids that shows while a route acts, or none. -/
 inductive CsgProp where
   | none
@@ -55,7 +60,7 @@ inductive CsgProp where
   | emoteBubble    -- a sphere with a cone tail above the head
   | wristPanel     -- a rounded box on the off-hand wrist
   | floatingPanel  -- a box at arm's length
-  | radialRing     -- a torus cut into eight around the hand
+  | radialRing     -- a torus cut into wedges around the hand
   | micBadge       -- a capsule on a cylinder above the head
   | cameraBody     -- a box with a cylinder lens, held in the hand
   | laser          -- a thin cylinder out of the aim pose
@@ -82,7 +87,7 @@ def allMotions : List Motion :=
    emoteLeft, emoteDown, emoteRight, fingerCurl, handPose]
 
 def allRoutes : List Route := allMotions.map .motion ++
-  [quickMenu, mainMenu, expressionMenu, emoji, micToggle, camera, pointer, runtimeReserved,
+  [quickMenu, mainMenu, expressionMenu, micToggle, camera, pointer, runtimeReserved,
    hapticOutput].map .use
 
 def side : Hand → String
@@ -153,26 +158,25 @@ def route : Input → Route
   | haptic _ => .use hapticOutput
   | menuTouch | aTouch | bTouch | xTouch | yTouch | viewTouch | dpadUpTouch | dpadLeftTouch
   | dpadDownTouch | dpadRightTouch => .motion fingerCurl
-  | menuClick => .use quickMenu
+  | menuClick => .motion sitStand
   | viewClick => .use mainMenu
   | aClick => .motion jump
-  | bClick => .motion sitStand
+  | bClick | yClick => .use quickMenu
   | xClick => .use expressionMenu
-  | yClick => .use emoji
   | dpadUpClick => .motion emoteUp
   | dpadLeftClick => .motion emoteLeft
   | dpadDownClick => .motion emoteDown
   | dpadRightClick => .motion emoteRight
 
-def prop : Route → CsgProp
+def prop (g : GrabMode) : Route → CsgProp
   | .motion snapTurn => .turnMarker
   | .motion teleportAim => .landingRing
   | .motion sitStand => .seat
-  | .motion grab => .pinchHandles
+  | .motion grab => if g = .fallback then .pinchHandles else .none
   | .motion emoteUp | .motion emoteLeft | .motion emoteDown | .motion emoteRight => .emoteBubble
   | .motion .move | .motion sprint | .motion crouch | .motion jump | .motion interact
   | .motion fingerCurl | .motion handPose => .none
-  | .use quickMenu => .wristPanel
+  | .use quickMenu => .radialRing
   | .use mainMenu => .floatingPanel
   | .use expressionMenu => .radialRing
   | .use emoji => .emoteBubble
@@ -197,8 +201,57 @@ theorem every_motion_has_an_input :
 
 theorem every_route_is_used : allRoutes.all (fun r => allInputs.any (route · == r)) = true := by decide
 
+theorem pinch_handles_only_in_fallback :
+    allRoutes.all (fun r => prop .off r != .pinchHandles) = true ∧
+      prop .fallback (.motion grab) = .pinchHandles := by decide
+
+theorem secondary_buttons_open_the_radial : route bClick = .use quickMenu ∧ route yClick = .use quickMenu := by
+  decide
+
 theorem only_outputs_route_to_haptics :
     allInputs.all (fun i => isOutput i == (route i == .use hapticOutput)) = true := by decide
+
+/-- The same input on Meta's Quest 3 Touch Plus profile, as the pen's action and the path it binds,
+or none where that controller has no such input (the profile is `/interaction_profiles/meta/touch_plus_controller`). -/
+def metaBinding : Input → Option (String × String)
+  | gripPose h => some ("grip_pose", s!"/user/hand/{side h}/input/grip/pose")
+  | aimPose h => some ("aim_pose", s!"/user/hand/{side h}/input/aim/pose")
+  | gripSurfacePose h => some ("palm_pose", s!"/user/hand/{side h}/input/grip_surface/pose")
+  | trigger h => some ("trigger", s!"/user/hand/{side h}/input/trigger/value")
+  | triggerTouch h => some ("trigger_touch", s!"/user/hand/{side h}/input/trigger/touch")
+  | triggerClick h => some ("trigger_click", s!"/user/hand/{side h}/input/trigger/value")
+  | squeeze h => some ("grip", s!"/user/hand/{side h}/input/squeeze/value")
+  | squeezeClick h => some ("grip_click", s!"/user/hand/{side h}/input/squeeze/value")
+  | thumbstick h | thumbstickUp h | thumbstickDown h | thumbstickLeft h | thumbstickRight h =>
+    some ("primary", s!"/user/hand/{side h}/input/thumbstick")
+  | thumbstickClick h => some ("primary_click", s!"/user/hand/{side h}/input/thumbstick/click")
+  | thumbstickTouch h => some ("primary_touch", s!"/user/hand/{side h}/input/thumbstick/touch")
+  | haptic h => some ("haptic", s!"/user/hand/{side h}/output/haptic")
+  | menuClick => some ("menu_button", "/user/hand/left/input/menu/click")
+  | aClick => some ("ax_button", "/user/hand/right/input/a/click")
+  | aTouch => some ("ax_touch", "/user/hand/right/input/a/touch")
+  | bClick => some ("by_button", "/user/hand/right/input/b/click")
+  | bTouch => some ("by_touch", "/user/hand/right/input/b/touch")
+  | xClick => some ("ax_button", "/user/hand/left/input/x/click")
+  | xTouch => some ("ax_touch", "/user/hand/left/input/x/touch")
+  | yClick => some ("by_button", "/user/hand/left/input/y/click")
+  | yTouch => some ("by_touch", "/user/hand/left/input/y/touch")
+  | _ => none
+
+/-- What the station walk needs from a controller: every one is bound on Touch Plus. -/
+def walkRoutes : List Route :=
+  [.motion .move, .motion sprint, .motion snapTurn, .motion teleportAim, .motion jump, .motion grab,
+   .motion interact, .use quickMenu]
+
+theorem touch_plus_binds_every_walk_route :
+    walkRoutes.all (fun r => allInputs.any (fun i => route i == r && (metaBinding i).isSome)) = true := by
+  decide
+
+/-! Control: with B and Y unbound the radial has no Touch Plus input, and the check sees it. -/
+
+example : (walkRoutes.all fun r => allInputs.any fun i =>
+    route i == r && (if i == bClick || i == yClick then false else (metaBinding i).isSome)) = false := by
+  decide
 
 /-! Control: dropping one input's route leaves its motion with none, and the coverage check sees it. -/
 
