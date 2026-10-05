@@ -3,7 +3,7 @@ title: motion-bricks.cpp (vendored subset)
 message: >-
   If you use this code, cite motion-bricks.cpp and NVIDIA MotionBricks.
 abstract: >-
-  MotionBricks-G1 on ggml, for dress-on's motion.elf (RFD 2277 A2): the C
+  MotionBricks-G1 on ggml, for interactor-motion-guest's motion.elf (RFD 2277 A2): the C
   API (capi.cpp), the agent (agent.cpp), the transition planner (planner.cpp),
   the root, pose and VQ-decoder graphs (root.cpp, pose.cpp, decoder.cpp), the
   motion representation (motion_rep.cpp), model and style loading (model.cpp,
@@ -14,7 +14,9 @@ abstract: >-
   embedder, and otherwise names exactly upstream's calls; the four call sites
   are spelled MB_FS:: and MB_GGUF_OPEN. neural_runtime.cpp (fopen, ggml-cpu or
   ggml-vulkan) is left out: guest/motion/mb_runtime.cpp implements
-  neural_runtime.hpp over the pump's READ and UPLOAD and ggml-rd. cli.cpp and
+  neural_runtime.hpp over the pump's READ and UPLOAD and ggml-rd;
+  neural_runtime.cpp is copied from src/ at the pinned commit, unmodified,
+  for the host build tools/motion_native only. cli.cpp and
   the Go bindings are left out. src/ is identical at 2368edd (the local
   checkout's HEAD, not pushed) and e61da1f (pushed, pinned here). The weights
   and styles are chibifire/MotionBricks-G1-GGML (tools/models/manifest.tsv).
