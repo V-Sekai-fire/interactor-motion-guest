@@ -18,14 +18,29 @@ defmodule Build do
     File.mkdir_p!(build)
 
     env = [{"BUILD_DIR", build}, {"PYTHON", "python3"}, {"GUEST_RUNTIME_ROOT", Path.join(weft, "2-contract/guest-runtime")}]
-    run("bash", [Path.join(weft, "2-contract/ggml-rd/kernels/ggml/gen.sh"), "--no-emit"], env)
-    run("python3", [Path.join(weft, "2-contract/guest-runtime/tools/inline_prelude.py"), Path.join(weft, "2-contract/ggml-rd")])
+    ggml_rd = Path.join(weft, "2-contract/ggml-rd")
+    prelude = keep_prelude(ggml_rd, Path.join(build, "prelude"))
+    run("bash", [Path.join(ggml_rd, "kernels/ggml/gen.sh"), "--no-emit"], env)
+    run("python3", [Path.join(weft, "2-contract/guest-runtime/tools/inline_prelude.py"), ggml_rd, prelude])
     unless File.exists?(Path.join(build, "build.ninja")) do
       run("cmake", ["-S", @root, "-B", build, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=#{toolchain}", "-DWEFT_ROOT=#{weft}"])
     end
     run("cmake", ["--build", build, "--target", "motion"])
     elf = File.read!(Path.join(build, "motion.elf"))
     IO.puts("== motion.elf: #{byte_size(elf)} bytes, sha256 #{Base.encode16(:crypto.hash(:sha256, elf), case: :lower)}")
+  end
+
+  # A Linux slangc rewrites every emit with an include of its prelude, so one committed emit is kept
+  # aside first as the inline form inline_prelude.py restores.
+  defp keep_prelude(repo, root) do
+    emit =
+      Path.wildcard(Path.join(repo, "kernels/*/cpp/*_emit.cpp"))
+      |> Enum.find(&String.starts_with?(File.read!(&1), "#ifndef SLANG_CPP_PRELUDE_H")) ||
+        fail("no emit under #{repo} carries the inline prelude")
+    dir = Path.join(root, "kernels/ggml/cpp")
+    File.mkdir_p!(dir)
+    File.cp!(emit, Path.join(dir, Path.basename(emit)))
+    root
   end
 
   defp run(cmd, args, env \\ []) do
