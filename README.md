@@ -8,7 +8,14 @@ The guest generates body motion inside the sandbox from a prompt or a style, so 
 
 ## Build and run
 
-`transport-meshing-pen` builds the guest program from the goal manifest's sibling checkouts. The route table builds on its own:
+The guest program builds from this checkout, its vendored model ports and the goal manifest's sibling checkouts of `contract-guest-runtime`, `contract-ggml-rd`, `ggml` and `repository-riscv64-sysroot`. It then runs under the sandbox's emulator, natively translated and interpreted, and the two runs must agree:
+
+```sh
+elixir tools/build.exs
+elixir tools/check_bintr.exs --elf=build/rv64/motion.elf
+```
+
+The route table builds on its own:
 
 ```sh
 cd routes
@@ -17,4 +24,4 @@ lake build
 
 ## Licence
 
-There is no licence file, and the guest and route sources state none. The vendored motion model port is Apache-2.0.
+There is no licence file, and the guest and route sources state none. The vendored motion model ports are Apache-2.0.

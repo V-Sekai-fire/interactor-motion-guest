@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: kimodo-ggml (vendored subset)
+message: >-
+  If you use this code, cite kimodo-ggml and NVIDIA Kimodo.
+abstract: >-
+  Kimodo text-to-motion on ggml, for interactor-motion-guest's motion.elf (RFD 2277 A2): the
+  two-stage motion denoiser (denoiser.cpp), the cosine schedule, DDIM step and
+  separated CFG (diffusion.cpp), the global-to-local root conditioning
+  (motion_rep.cpp), the skeleton tables (skeleton.hpp) and the weights class
+  interface (ggml_weights.hpp), from src/, UNMODIFIED. motion_decode.cpp is
+  kept for reference; motion.elf decodes with guest/motion/kimodo_decode.h
+  instead, the same arithmetic ending in matrices (AGENTS.md rule 11), not
+  quaternions. Local adaptations live outside this directory: ggml_weights.cpp
+  (fopen, and the Vulkan/CUDA/CPU backend choice) is replaced by
+  guest/motion/kimodo_weights.cpp (metadata by the pump's READ, tensors by its
+  UPLOAD into the ggml-rd RenderingDevice buffer); the initial noise is drawn
+  by guest/motion/noise.h instead of std::normal_distribution (whose output
+  differs between standard libraries); the LLM2Vec text encoder and the C API
+  are left out of motion.elf (the text encoder is the host's stand-in). The
+  host-only files tools/motion_native compiles, src/ggml_weights.cpp,
+  src/gguf.cpp, src/gguf.hpp, src/llm_text_encoder.cpp,
+  src/llm_text_encoder.hpp, src/llm_tokenizer.cpp, src/llm_tokenizer.hpp,
+  include/kimodo/kimodo.hpp and include/kimodo/kimodo_capi.h, are copied from
+  the same commit, unmodified, and never enter motion.elf.
+  The weights are chibifire/Kimodo-SOMA-RP-v1.1-gguf (tools/models/manifest.tsv).
+authors:
+  - name: V-Sekai-fire
+  - name: NVIDIA (Kimodo, the model and its Python reference)
+repository-code: https://github.com/V-Sekai-fire/kimodo-ggml
+commit: 9e62d0ed6bd06fa2890ce92d752a40ae204f1f85
+license: Apache-2.0
