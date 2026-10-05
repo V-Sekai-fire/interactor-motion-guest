@@ -8,7 +8,7 @@ abstract: >-
   the root, pose and VQ-decoder graphs (root.cpp, pose.cpp, decoder.cpp), the
   motion representation (motion_rep.cpp), model and style loading (model.cpp,
   style.cpp) and error.cpp, from src/ and include/. Local adaptations, each
-  marked "interactor-dress-on": model.cpp and style.cpp include guest_io.hpp
+  marked "interactor-motion-guest": model.cpp and style.cpp include guest_io.hpp
   (new here), which under MOTIONBRICKS_GUEST_IO routes their four filesystem
   calls (is_regular_file, is_directory, absolute, gguf_init_from_file) to the
   embedder, and otherwise names exactly upstream's calls; the four call sites

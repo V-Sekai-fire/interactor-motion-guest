@@ -1,4 +1,4 @@
-// interactor-dress-on addition (not upstream). model.cpp and style.cpp reach
+// interactor-motion-guest addition (not upstream). model.cpp and style.cpp reach
 // the filesystem in four places: is_regular_file, is_directory, absolute and
 // gguf_init_from_file. A godot-sandbox guest has no filesystem (openat is
 // EBADF, AGENTS.md), so under MOTIONBRICKS_GUEST_IO those four go to the

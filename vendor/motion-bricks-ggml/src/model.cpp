@@ -20,7 +20,7 @@
 #include <gguf.h>
 #endif
 
-// interactor-dress-on: the sandbox guest has no filesystem; guest_io.hpp routes
+// interactor-motion-guest: the sandbox guest has no filesystem; guest_io.hpp routes
 // these calls to the host (MOTIONBRICKS_GUEST_IO), else they are std::filesystem
 // and gguf_init_from_file as upstream.
 #include "guest_io.hpp"
