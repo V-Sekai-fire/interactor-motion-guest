@@ -24,4 +24,4 @@ lake build
 
 ## Licence
 
-There is no licence file, and the guest and route sources state none. The vendored motion model ports are Apache-2.0.
+MIT. See [LICENSE](LICENSE). The vendored motion model ports are Apache-2.0.
