@@ -15,7 +15,7 @@ inductive Hand where
 inductive Input where
   | gripPose (h : Hand) | aimPose (h : Hand) | gripSurfacePose (h : Hand)
   | systemTouch (h : Hand) | systemClick (h : Hand)
-  | bumperTouch (h : Hand) | bumperClick (h : Hand)
+  | shoulderTouch (h : Hand) | shoulderClick (h : Hand)
   | trigger (h : Hand) | triggerTouch (h : Hand) | triggerClick (h : Hand)
   | squeeze (h : Hand) | squeezeTouch (h : Hand) | squeezeClick (h : Hand)
   | thumbstick (h : Hand) | thumbstickClick (h : Hand) | thumbstickTouch (h : Hand)
@@ -71,8 +71,8 @@ open Hand Input Motion Use
 def hands : List Hand := [left, right]
 
 def perHand (h : Hand) : List Input :=
-  [gripPose h, aimPose h, gripSurfacePose h, systemTouch h, systemClick h, bumperTouch h,
-   bumperClick h, trigger h, triggerTouch h, triggerClick h, squeeze h, squeezeTouch h,
+  [gripPose h, aimPose h, gripSurfacePose h, systemTouch h, systemClick h, shoulderTouch h,
+   shoulderClick h, trigger h, triggerTouch h, triggerClick h, squeeze h, squeezeTouch h,
    squeezeClick h, thumbstick h, thumbstickClick h, thumbstickTouch h, thumbstickUp h,
    thumbstickDown h, thumbstickLeft h, thumbstickRight h, haptic h]
 
@@ -100,8 +100,8 @@ def path : Input → String
   | gripSurfacePose h => s!"/user/hand/{side h}/input/grip_surface/pose"
   | systemTouch h => s!"/user/hand/{side h}/input/system/touch"
   | systemClick h => s!"/user/hand/{side h}/input/system/click"
-  | bumperTouch h => s!"/user/hand/{side h}/input/bumper/touch"
-  | bumperClick h => s!"/user/hand/{side h}/input/bumper/click"
+  | shoulderTouch h => s!"/user/hand/{side h}/input/shoulder/touch"
+  | shoulderClick h => s!"/user/hand/{side h}/input/shoulder/click"
   | trigger h => s!"/user/hand/{side h}/input/trigger/value"
   | triggerTouch h => s!"/user/hand/{side h}/input/trigger/touch"
   | triggerClick h => s!"/user/hand/{side h}/input/trigger/click"
@@ -142,11 +142,11 @@ world and one grip an object; every touch and analog value curls the finger rest
 def route : Input → Route
   | gripPose _ | gripSurfacePose _ => .motion handPose
   | aimPose _ => .use pointer
-  | systemTouch _ | bumperTouch _ | trigger _ | triggerTouch _ | squeeze _ | squeezeTouch _
+  | systemTouch _ | shoulderTouch _ | trigger _ | triggerTouch _ | squeeze _ | squeezeTouch _
   | thumbstickTouch _ => .motion fingerCurl
   | systemClick _ => .use runtimeReserved
-  | bumperClick left => .use micToggle
-  | bumperClick right => .use camera
+  | shoulderClick left => .use micToggle
+  | shoulderClick right => .use camera
   | triggerClick _ => .motion interact
   | squeezeClick _ => .motion grab
   | thumbstick left | thumbstickUp left | thumbstickDown left | thumbstickLeft left
