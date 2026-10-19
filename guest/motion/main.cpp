@@ -888,6 +888,7 @@ static Variant motion_stats() {
 	r += " rule4_same_frame_syncs=" + std::to_string(g_dev.same_frame_syncs());
 	r += " syncs=" + std::to_string(g_dev.syncs());
 	r += " submits=" + std::to_string(g_dev.submits());
+	r += " permanent_slots=" + std::to_string(g_dev.permanent_slots());
 	r += " queued=" + std::to_string(g_queue.size());
 	r += " gas=" + std::to_string(g_gas) + " gas_yields=" + std::to_string(g_gas_yields);
 	return text(r);
