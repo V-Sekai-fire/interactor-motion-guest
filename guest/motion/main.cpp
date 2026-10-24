@@ -1,4 +1,4 @@
-// motion.elf (RFD 2277 A2): our own motion for the "does the dress clip in
+// motion.elf (RFD66606-2277 A2): our own motion for the "does the dress clip in
 // motion" fit, generated in the sandbox on ggml-rd (the VRChat SDK's
 // proxy_*.anim clips are blocklisted and never read).
 //

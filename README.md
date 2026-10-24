@@ -4,7 +4,7 @@ Text-to-motion and style-driven motion models run on the sandbox's ggml runtime 
 
 ## What it is for
 
-The guest generates body motion inside the sandbox from a prompt or a style, so a garment can be checked for clipping while the avatar moves. A Lean route table maps every input of the headset's controller profile to a motion or a named use, and it does not build while any input lacks a route. [RFD 2277](https://github.com/V-Sekai-fire/manuals-weftspun/tree/main/rfd/2277-curvenet-cage-refit-and-unified-expressions-in-modular-avatar) owns the in-motion fit.
+The guest generates body motion inside the sandbox from a prompt or a style, so a garment can be checked for clipping while the avatar moves. A Lean route table maps every input of the headset's controller profile to a motion or a named use, and it does not build while any input lacks a route. [RFD66606-2277](https://github.com/V-Sekai-fire/manuals-weftspun/tree/main/rfd/2277-curvenet-cage-refit-and-unified-expressions-in-modular-avatar) owns the in-motion fit.
 
 ## Build and run
 
