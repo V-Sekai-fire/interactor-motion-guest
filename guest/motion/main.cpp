@@ -22,12 +22,16 @@
 //   motion_open(rd, total_mb, models_dir)   once
 //   motion_env("GGML_RD_FAULT=1 KIMODO_STEPS=100 MOTION_GAS=2e7")
 //                                           switches for later jobs (MOTION_GAS: the
-//                                           instruction budget of a slice)
+//                                           instruction budget of a slice; KIMODO_BATCH=n:
+//                                           up to n queued Kimodo jobs of one length
+//                                           run together; unset or 1 = one at a time;
+//                                           KIMODO_PROFILE=1: a timing line a step)
 //   motion_prompt_embedding(prompt, floats) the stand-in's job data
 //   motion_generate(model, prompt, seconds, seed) -> "QUEUED <id>"; the job
 //                                           queue runs on the pump
 //   motion_pump(data)                       one slice a frame until DONE / ERROR (rule 4)
-//   motion_progress()                       the queue now (model, prompt, step i of n)
+//   motion_progress()                       the queue now (model, prompt, step i of n;
+//                                           jobs: the Kimodo jobs batched with it)
 //   motion_status(id), motion_result(id), motion_raw(id)
 //   motion_avatar(names, parents, rest_global, rest_local, roles)
 //                                           the avatar's bones, exported by the host
@@ -110,14 +114,18 @@ struct Progress {
 	int model = -1;
 	std::string phase = "idle";
 	int64_t i = 0, n = 0;
+	std::vector<int> jobs; // every job running now (a Kimodo batch); job is the first
 };
 Progress g_prog;
 
 // --- ggml-rd hooks (rfdetr_seg.elf's four) ---------------------------------------------
+int64_t g_wait_yields = 0, g_coop_yields = 0; // since start; KIMODO_PROFILE reports them per step
 void hook_wait_gpu(void *) {
+	++g_wait_yields;
 	pump::wait_gpu();
 }
 void hook_coop(void *) {
+	++g_coop_yields;
 	pump::coop();
 }
 bool hook_upload(void *, const std::string &path, uint64_t file_offset, uint64_t bytes, ::RID rid, uint64_t dst_offset) {
@@ -249,67 +257,168 @@ int env_int(const char *k, int dflt) {
 	return v && *v ? std::atoi(v) : dflt;
 }
 
-bool run_kimodo(Clip &c, std::string &err) {
-	const std::string &prompt = g_clip_prompt[size_t(c.id)];
-	size_t e = 0;
-	for (; e < g_emb_prompts.size() && g_emb_prompts[e] != prompt; ++e) {
+bool kimodo_store(Clip &c, const float *sampled, size_t frames, size_t D, size_t J, const kimodo::detail::skeleton_spec *skel);
+
+size_t kimodo_frames(const Clip &c) {
+	return size_t(std::lround(double(c.seconds) * kFps));
+}
+
+// KIMODO_PROFILE=1: per diffusion step, where its time went (the host clock;
+// GGML_RD_TIMESTAMPS=1 adds the GPU time of each Transformer pass, and
+// GGML_RD_PROFILE=1 graph_compute's phases).
+struct StepProfile {
+	int64_t gpu_ns = 0, pack_us = 0, prepare_us = 0, params_us = 0, record_us = 0;
+	int64_t wait_yields = 0, coop_yields = 0;
+};
+StepProfile g_sp;
+void profile_after_graph(void *) {
+	const int64_t ns = ggml_backend_rd_last_gpu_ns();
+	g_sp.gpu_ns += ns > 0 ? ns : 0;
+	const ggml_rd_profile &p = ggml_backend_rd_last_profile();
+	g_sp.pack_us += p.us_pack;
+	g_sp.prepare_us += p.us_prepare;
+	g_sp.params_us += p.us_upload;
+	g_sp.record_us += p.us_record + p.us_submit;
+}
+
+// Kimodo jobs of one length run together, the way a server batches its
+// sequences: N prompts are 3N batch entries of one Transformer pass per
+// step, each prompt with its own noise, text embedding and timesteps.
+// Every clip comes out as it does alone (the denoiser's batch is per entry).
+// The fields set on success are the ones a lone job sets.
+bool run_kimodo(std::vector<Clip> &cs, std::vector<std::string> &errs, std::vector<char> &ok) {
+	const size_t N = cs.size();
+	ok.assign(N, 0);
+	errs.assign(N, std::string());
+	std::vector<size_t> emb_of(N);
+	std::vector<size_t> live; // index into cs of the jobs that have an embedding
+	for (size_t k = 0; k < N; ++k) {
+		const std::string &prompt = g_clip_prompt[size_t(cs[k].id)];
+		size_t e = 0;
+		for (; e < g_emb_prompts.size() && g_emb_prompts[e] != prompt; ++e) {
+		}
+		if (e == g_emb_prompts.size()) {
+			errs[k] = "no embedding for prompt '" + prompt +
+					"' (stand-in: the Llama-3 text encoder is not in the guest; the host passes each prompt's "
+					"native embedding with motion_prompt_embedding)";
+			continue;
+		}
+		emb_of[k] = e;
+		live.push_back(k);
 	}
-	if (e == g_emb_prompts.size()) {
-		err = "no embedding for prompt '" + prompt +
-				"' (stand-in: the Llama-3 text encoder is not in the guest; the host passes each prompt's "
-				"native embedding with motion_prompt_embedding)";
+	if (live.empty()) {
 		return false;
 	}
+	std::string err;
 	g_prog.phase = "streaming Kimodo weights";
 	if (!kimodo_load(err)) {
+		for (size_t k : live) {
+			errs[k] = err;
+		}
 		return false;
 	}
 	const auto *skel = kimodo::detail::find_skeleton(g_kimodo->skeleton_key());
 	const size_t D = g_kimodo->motion_dim(), J = skel->joints();
-	const size_t frames = size_t(std::lround(double(c.seconds) * kFps));
-	c.steps = env_int("KIMODO_STEPS", 100);
+	const size_t frames = kimodo_frames(cs[live.front()]), clip = frames * D, P = live.size();
+	const int steps = env_int("KIMODO_STEPS", 100);
 	// The seed's noise, the same on every platform (noise.h says why it is
 	// not upstream's std::normal_distribution).
-	std::vector<float> noise(frames * D);
-	motion::normal_noise(uint64_t(c.seed), noise.data(), noise.size());
-	logf_("kimodo job %d: '%s' %zu frames, %d steps, seed %lld, noise[0..2] %.9g %.9g %.9g", c.id, prompt.c_str(),
-			frames, c.steps, (long long)c.seed, noise[0], noise[1], noise[2]);
-	std::span<const float> emb(g_emb.data() + e * 4096, 4096);
+	std::vector<float> state(P * clip), next(state.size()), embs(P * 4096), times(P);
+	for (size_t p = 0; p < P; ++p) {
+		Clip &c = cs[live[p]];
+		c.steps = steps;
+		float *noise = state.data() + p * clip;
+		motion::normal_noise(uint64_t(c.seed), noise, clip);
+		logf_("kimodo job %d: '%s' %zu frames, %d steps, seed %lld, noise[0..2] %.9g %.9g %.9g", c.id,
+				g_clip_prompt[size_t(c.id)].c_str(), frames, c.steps, (long long)c.seed, noise[0], noise[1], noise[2]);
+		std::memcpy(embs.data() + p * 4096, g_emb.data() + emb_of[live[p]] * 4096, 4096 * sizeof(float));
+	}
+	if (P > 1) {
+		logf_("kimodo: %zu jobs in one batch (%zu CFG branches a pass)", P, 3 * P);
+	}
 	// kimodo::detail::sample_motion_from_noise, call for call (the same cosine
 	// schedule, separated-CFG denoiser and DDIM step in the same order), with
 	// a progress line and a slice boundary after every step.
-	auto schedule = kimodo::detail::make_cosine_schedule(1000, unsigned(c.steps));
-	if (!schedule) {
-		err = schedule.error();
-		return false;
-	}
-	std::vector<float> state(noise.begin(), noise.end()), next(state.size());
-	g_prog.phase = "diffusion step";
-	g_prog.n = c.steps;
-	for (unsigned i = unsigned(c.steps); i-- > 0;) {
-		g_prog.i = c.steps - int64_t(i);
-		auto clean = kimodo::detail::run_separated_cfg_denoiser(*g_kimodo, state, emb, float(schedule->use_timesteps[i]),
-				2.f, 2.f, frames);
-		if (!clean) {
-			err = clean.error();
-			return false;
+	auto schedule = kimodo::detail::make_cosine_schedule(1000, unsigned(steps));
+	auto fail_all = [&](const std::string &why) {
+		for (size_t k : live) {
+			errs[k] = why;
 		}
-		auto stepped = kimodo::detail::ddim_step(*schedule, i, state.data(), clean->data(), next.data(), state.size());
-		if (!stepped) {
-			err = stepped.error();
-			return false;
+		return false;
+	};
+	if (!schedule) {
+		return fail_all(schedule.error());
+	}
+	const bool prof = env_int("KIMODO_PROFILE", 0) != 0;
+	auto &dp = kimodo::detail::denoiser_profile_state();
+	dp = kimodo::detail::denoiser_profile{};
+	if (prof) {
+		dp.clock_us = rdc::host_usec;
+		dp.after_graph = profile_after_graph;
+	}
+	const int64_t t_job = prof ? rdc::host_usec() : 0;
+	g_prog.phase = "diffusion step";
+	g_prog.n = steps;
+	for (unsigned i = unsigned(steps); i-- > 0;) {
+		g_prog.i = steps - int64_t(i);
+		const kimodo::detail::denoiser_profile before = dp;
+		g_sp = StepProfile{};
+		const int64_t waits0 = g_wait_yields, coops0 = g_coop_yields;
+		const int64_t t_step = prof ? rdc::host_usec() : 0;
+		// Each prompt's own schedule: one step count for the batch, so one table.
+		for (size_t p = 0; p < P; ++p) {
+			times[p] = float(schedule->use_timesteps[i]);
+		}
+		auto clean = kimodo::detail::run_separated_cfg_denoiser_batch(*g_kimodo, P, state, embs, times, 2.f, 2.f, frames);
+		if (!clean) {
+			return fail_all(clean.error());
+		}
+		for (size_t p = 0; p < P; ++p) {
+			auto stepped = kimodo::detail::ddim_step(*schedule, i, state.data() + p * clip, clean->data() + p * clip,
+					next.data() + p * clip, clip);
+			if (!stepped) {
+				return fail_all(stepped.error());
+			}
 		}
 		state.swap(next);
+		g_sp.wait_yields = g_wait_yields - waits0;
+		g_sp.coop_yields = g_coop_yields - coops0;
+		if (prof) {
+			logf_("kimodo step %lld/%d batch %zu: %lld us; transformer total %lld build %lld upload %lld (%lld B) "
+				  "compute %lld [pack %lld prepare %lld params %lld record %lld] download %lld (%lld B); gpu %lld us; "
+				  "passes %lld, submits %lld, wait yields %lld, coop yields %lld",
+					(long long)g_prog.i, steps, P, (long long)(rdc::host_usec() - t_step),
+					(long long)(dp.total_us - before.total_us), (long long)(dp.build_us - before.build_us),
+					(long long)(dp.upload_us - before.upload_us), (long long)(dp.upload_bytes - before.upload_bytes),
+					(long long)(dp.compute_us - before.compute_us), (long long)g_sp.pack_us, (long long)g_sp.prepare_us,
+					(long long)g_sp.params_us, (long long)g_sp.record_us, (long long)(dp.download_us - before.download_us),
+					(long long)(dp.download_bytes - before.download_bytes), (long long)(g_sp.gpu_ns / 1000),
+					(long long)(dp.graphs - before.graphs), (long long)(dp.submits - before.submits), (long long)g_sp.wait_yields, (long long)g_sp.coop_yields);
+		}
 		gas();
 	}
-	const std::vector<float> *sampled = &state;
+	if (prof) {
+		logf_("kimodo batch of %zu: %d steps in %lld us; graph buffers %zu B; %s", P, steps,
+				(long long)(rdc::host_usec() - t_job), kimodo::detail::denoiser_graph_bytes(),
+				ggml_backend_rd_stats().c_str());
+	}
+	dp = kimodo::detail::denoiser_profile{};
+	for (size_t p = 0; p < P; ++p) {
+		Clip &c = cs[live[p]];
+		kimodo_store(c, state.data() + p * clip, frames, D, J, skel);
+		ok[live[p]] = 1;
+	}
+	return true;
+}
+
+bool kimodo_store(Clip &c, const float *sampled, size_t frames, size_t D, size_t J, const kimodo::detail::skeleton_spec *skel) {
 	std::vector<float> root, local;
-	motion::kimodo_decode::decode(sampled->data(), frames, J, skel->parents.data(), g_k_gm.data(), g_k_gs.data(),
+	motion::kimodo_decode::decode(sampled, frames, J, skel->parents.data(), g_k_gm.data(), g_k_gs.data(),
 			g_k_bm.data(), g_k_bs.data(), root, local);
 	c.frames = int(frames);
 	c.joints = int(J);
-	c.raw_n = sampled->size();
-	c.raw_off = push_floats(sampled->data(), sampled->size());
+	c.raw_n = frames * D;
+	c.raw_off = push_floats(sampled, c.raw_n);
 	c.root_off = push_floats(root.data(), root.size());
 	c.local_off = push_floats(local.data(), local.size());
 	std::vector<float> rest(J * 3);
@@ -555,27 +664,56 @@ void runner(void *) {
 	while (!g_queue.empty()) {
 		const auto [kind, id] = g_queue.front();
 		g_queue.pop_front();
-		g_clips[size_t(id)].state = 1;
+		// The jobs that run now: a Kimodo GENERATE job takes every queued Kimodo
+		// GENERATE job of its length with it (KIMODO_BATCH=<n> lets up to n jobs
+		// share a pass; unset or 1: one job at a time), in queue order; any other job runs alone.
+		std::vector<int> ids{ id };
+		const bool kimodo_batch = kind == GENERATE && g_clips[size_t(id)].model == KIMODO;
+		if (kimodo_batch) {
+			const int cap = std::max(env_int("KIMODO_BATCH", 1), 1);
+			const size_t frames = kimodo_frames(g_clips[size_t(id)]);
+			for (auto it = g_queue.begin(); it != g_queue.end() && ids.size() < size_t(cap);) {
+				const Clip &q = g_clips[size_t(it->second)];
+				if (it->first == GENERATE && q.model == KIMODO && kimodo_frames(q) == frames) {
+					ids.push_back(it->second);
+					it = g_queue.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
 		g_prog = Progress{};
-		g_prog.job = id;
+		g_prog.job = ids.front();
+		g_prog.jobs = ids;
 		g_prog.model = g_clips[size_t(id)].model;
-		std::string err;
-		Clip c = g_clips[size_t(id)]; // the host may queue more while this runs: work on a copy
-		bool ok = true;
-		if (kind == GENERATE) {
-			ok = c.model == KIMODO ? run_kimodo(c, err) : run_mbricks(c, err);
+		// The host may queue more while these run: work on copies.
+		std::vector<Clip> cs;
+		for (int j : ids) {
+			g_clips[size_t(j)].state = 1;
+			cs.push_back(g_clips[size_t(j)]);
 		}
-		if (ok && g_have_avatar) {
-			ok = run_retarget(c, err);
+		std::vector<std::string> errs(ids.size());
+		std::vector<char> ok(ids.size(), 1);
+		if (kimodo_batch) {
+			run_kimodo(cs, errs, ok);
+		} else if (kind == GENERATE) {
+			ok[0] = run_mbricks(cs[0], errs[0]);
 		}
-		c.state = ok ? 2 : 3;
-		g_clips[size_t(id)] = c;
-		if (!ok) {
-			g_clip_error[size_t(id)] = err;
-			logf_("job %d (%s '%s'): ERROR %s", id, kModelNames[c.model], g_clip_prompt[size_t(id)].c_str(), err.c_str());
-		} else {
-			logf_("job %d (%s '%s'): DONE %d frames x %d joints%s", id, kModelNames[c.model],
-					g_clip_prompt[size_t(id)].c_str(), c.frames, c.joints, c.retargeted ? ", retargeted" : "");
+		for (size_t k = 0; k < ids.size(); ++k) {
+			Clip &c = cs[k];
+			const int cid = ids[k];
+			if (ok[k] && g_have_avatar) {
+				ok[k] = run_retarget(c, errs[k]);
+			}
+			c.state = ok[k] ? 2 : 3;
+			g_clips[size_t(cid)] = c;
+			if (!ok[k]) {
+				g_clip_error[size_t(cid)] = errs[k];
+				logf_("job %d (%s '%s'): ERROR %s", cid, kModelNames[c.model], g_clip_prompt[size_t(cid)].c_str(), errs[k].c_str());
+			} else {
+				logf_("job %d (%s '%s'): DONE %d frames x %d joints%s", cid, kModelNames[c.model],
+						g_clip_prompt[size_t(cid)].c_str(), c.frames, c.joints, c.retargeted ? ", retargeted" : "");
+			}
 		}
 		g_prog.phase = "idle";
 		pump::coop(); // give the frame back between jobs
@@ -588,7 +726,8 @@ Variant text(const std::string &s) {
 }
 
 void apply_env(const std::string &env) {
-	for (const char *k : { "GGML_RD_FAULT", "GGML_RD_BARRIER_ALL", "GGML_RD_TIMESTAMPS", "KIMODO_STEPS", "MOTION_GAS", "MOTION_RUNG" }) {
+	for (const char *k : { "GGML_RD_FAULT", "GGML_RD_BARRIER_ALL", "GGML_RD_TIMESTAMPS", "GGML_RD_PROFILE", "KIMODO_STEPS",
+				 "KIMODO_BATCH", "KIMODO_PROFILE", "MOTION_GAS", "MOTION_RUNG" }) {
 		unsetenv(k);
 	}
 	for (const std::string &kv : split(env, ' ')) {
@@ -620,6 +759,16 @@ static Variant motion_open(Object rd, int64_t total_mb, String models_dir) {
 		h.read = hook_read;
 		ggml_backend_rd_set_hooks(h);
 		ggml_set_abort_callback(on_ggml_abort);
+		// Godot's Metal RenderingDevice waits this long for a submit's fence and
+		// then reads on (drivers/metal/rendering_device_driver_metal3.cpp,
+		// fence_wait), so a longer submit gives back bytes the GPU has not
+		// written yet. Kimodo cuts each Transformer pass into submits of half
+		// that at the last pass's rate: a GPU running half as fast as it did
+		// still finishes in time.
+		constexpr int64_t kGodotFenceWaitUs = 2000 * 1000;
+		auto &submit = kimodo::detail::denoiser_submit_policy_state();
+		submit.clock_us = rdc::host_usec;
+		submit.budget_us = kGodotFenceWaitUs / 2;
 	}
 	g_models = models_dir.utf8();
 	return text(std::string(g_attached ? "OPEN device=" + g_dev.device_name() : std::string("OPEN no RD device")) +
@@ -873,6 +1022,7 @@ static Variant motion_progress() {
 	d["phase"] = text(g_prog.phase);
 	d["i"] = Variant(g_prog.i);
 	d["n"] = Variant(g_prog.n);
+	d["jobs"] = Variant(PackedArray<int32_t>(std::vector<int32_t>(g_prog.jobs.begin(), g_prog.jobs.end())));
 	d["queued"] = Variant(int64_t(g_queue.size()));
 	d["gas"] = Variant(int64_t(g_gas));
 	d["gas_yields"] = Variant(g_gas_yields);
@@ -896,7 +1046,7 @@ static Variant motion_stats() {
 
 int main() {
 	ADD_API_FUNCTION(motion_open, "String", "Object rd, int total_mb, String models_dir", "Attach the host's RenderingDevice; models_dir holds Kimodo-SOMA-RP-v1.1-gguf/ and MotionBricks-G1-GGML/");
-	ADD_API_FUNCTION(motion_env, "String", "String env", "K=V switches for later jobs: GGML_RD_FAULT, GGML_RD_BARRIER_ALL, GGML_RD_TIMESTAMPS, KIMODO_STEPS, MOTION_GAS, MOTION_RUNG");
+	ADD_API_FUNCTION(motion_env, "String", "String env", "K=V switches for later jobs: GGML_RD_FAULT, GGML_RD_BARRIER_ALL, GGML_RD_TIMESTAMPS, GGML_RD_PROFILE, KIMODO_STEPS, KIMODO_BATCH, KIMODO_PROFILE, MOTION_GAS, MOTION_RUNG");
 	ADD_API_FUNCTION(motion_prompt_embedding, "String", "String prompt, PackedFloat32Array embedding", "Stand-in: a prompt's native LLM2Vec embedding (4096 floats)");
 	ADD_API_FUNCTION(motion_generate, "String", "String model, String prompt, float seconds, int seed", "Queue a clip: kimodo_soma | motionbricks_g1 -> QUEUED <id>");
 	ADD_API_FUNCTION(motion_pump, "Array", "PackedByteArray data", "Resume the job queue once: [header, text, rid]");
@@ -905,7 +1055,7 @@ int main() {
 	ADD_API_FUNCTION(motion_raw, "PackedFloat32Array", "int id", "Kimodo's sampler output (frames x 369), for the gate");
 	ADD_API_FUNCTION(motion_avatar, "String", "String names, PackedInt32Array parents, PackedFloat32Array rest_global, PackedFloat32Array rest_local, String roles", "The avatar's bones from its asset; answers the measured flexion axes");
 	ADD_API_FUNCTION(motion_retarget, "Dictionary", "int id", "The clip on the avatar (flexion of its role bones) and its clip ranges; queues the retarget if it is not made yet");
-	ADD_API_FUNCTION(motion_progress, "Dictionary", "", "The job queue now: job, model, prompt, phase, i of n, gas");
+	ADD_API_FUNCTION(motion_progress, "Dictionary", "", "The job queue now: job (the first of jobs, the Kimodo batch running), model, prompt, phase, i of n, gas");
 	ADD_API_FUNCTION(motion_output, "String", "", "What the jobs logged");
 	ADD_API_FUNCTION(motion_stats, "String", "", "ggml-rd and rd_compute counters");
 	halt();
