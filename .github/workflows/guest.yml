@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # By hand, to put a fresh motion.elf artifact on main when the last one has expired:
+  # the entities-model-explorer release takes the newest unexpired main artifact.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
